@@ -134,11 +134,45 @@ export class JobProcessor {
         ...(request.originalFilename && { originalFilename: request.originalFilename })
       };
 
+      // 📊 Progress pinging setup (only if webhook_url provided)
+      let lastPingTime = 0;
+      let lastPingProgress = 0;
+      const PING_INTERVAL_MS = 10000; // 10 seconds
+      const PING_PROGRESS_THRESHOLD = 5; // Only ping if progress changed by 5%+
+
+      const progressCallback = (progress: any) => {
+        // Always update local queue
+        this.jobQueue.updateProgress(jobId, progress.percent);
+
+        // Send progress ping if webhook_url exists
+        if (request.webhook_url) {
+          const now = Date.now();
+          const timeSinceLastPing = now - lastPingTime;
+          const progressDelta = Math.abs(progress.percent - lastPingProgress);
+
+          // Send ping if: 10s elapsed OR progress jumped by 5%+
+          if (timeSinceLastPing >= PING_INTERVAL_MS || progressDelta >= PING_PROGRESS_THRESHOLD) {
+            lastPingTime = now;
+            lastPingProgress = progress.percent;
+
+            // Fire-and-forget ping (no await)
+            this.webhookService.sendProgressPing(
+              request.webhook_url,
+              request.owner,
+              request.permlink,
+              progress.percent,
+              progress.profile, // Use encoding profile as stage
+              request.api_key
+            ).catch(err => {
+              // Already logged in sendProgressPing, just prevent unhandled rejection
+            });
+          }
+        }
+      };
+
       // Process the video with progress callback
       const startTime = Date.now();
-      const result = await this.videoProcessor.processVideo(videoJob, (progress) => {
-        this.jobQueue.updateProgress(jobId, progress.percent);
-      });
+      const result = await this.videoProcessor.processVideo(videoJob, progressCallback);
       const processingTimeSeconds = (Date.now() - startTime) / 1000;
 
       // Complete the job
@@ -156,6 +190,7 @@ export class JobProcessor {
             permlink: request.permlink,
             input_cid: request.input_cid,
             status: 'complete',
+            progress: 100, // ✅ Explicit completion progress
             manifest_cid: manifestCid,
             video_url: `ipfs://${manifestCid}/manifest.m3u8`,
             job_id: jobId,
@@ -195,6 +230,7 @@ export class JobProcessor {
             permlink: request.permlink,
             input_cid: request.input_cid,
             status: 'failed',
+            progress: 0, // ❌ Explicit failure progress
             job_id: jobId,
             processing_time_seconds: 0,
             qualities_encoded: [],

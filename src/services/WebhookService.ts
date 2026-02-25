@@ -56,6 +56,66 @@ export class WebhookService {
     throw new Error(`Webhook delivery failed: ${lastError?.message}`);
   }
 
+  /**
+   * Send progress update to gateway during encoding (non-blocking, fire-and-forget)
+   * Spec: POST /webhook/progress with { owner, permlink, progress, stage }
+   */
+  async sendProgressPing(
+    webhookUrl: string,
+    owner: string,
+    permlink: string,
+    progress: number,
+    stage?: string,
+    apiKey?: string
+  ): Promise<void> {
+    // Derive gateway base URL from webhook URL
+    const baseUrl = webhookUrl.replace(/\/webhook.*$/, '');
+    const progressUrl = `${baseUrl}/webhook/progress`;
+
+    try {
+      logger.debug(`📊 Sending progress ping: ${owner}/${permlink} → ${progress}% (${stage || 'N/A'})`);
+      
+      const response = await axios.post(
+        progressUrl,
+        {
+          owner,
+          permlink,
+          progress: Math.round(progress),
+          ...(stage && { stage })
+        },
+        {
+          timeout: 5000, // Shorter timeout for progress pings
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': '3Speak-Encoder/1.0.0',
+            ...(apiKey && { 'X-API-Key': apiKey })
+          },
+          validateStatus: (status) => status < 500
+        }
+      );
+
+      if (response.status >= 200 && response.status < 300) {
+        logger.debug(`✅ Progress ping delivered: ${progress}%`);
+      } else {
+        logger.warn(`⚠️ Progress ping returned ${response.status} for ${owner}/${permlink}`);
+      }
+
+    } catch (error) {
+      // Fire-and-forget: log but don't throw
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        if (status && status >= 400 && status < 500) {
+          logger.warn(`⚠️ Progress ping rejected (${status}): ${owner}/${permlink}`);
+        } else {
+          logger.warn(`⚠️ Progress ping failed: ${error.message}`);
+        }
+      } else {
+        logger.warn(`⚠️ Progress ping error:`, error);
+      }
+      // Don't propagate error - progress pings are optional
+    }
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }

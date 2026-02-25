@@ -56,6 +56,7 @@ export interface WebhookPayload {
   
   // ✅ ENCODING RESULT
   status: 'complete' | 'failed';
+  progress?: number;           // 0-100 percentage (100 on complete, 0 on failed)
   manifest_cid?: string;      // IPFS hash of encoded HLS directory
   video_url?: string;          // Full IPFS URI to manifest.m3u8
   
