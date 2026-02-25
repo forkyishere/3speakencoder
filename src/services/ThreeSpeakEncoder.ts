@@ -857,8 +857,51 @@ export class ThreeSpeakEncoder {
         ...(request.originalFilename && { originalFilename: request.originalFilename })
       };
 
-      // Process video using existing VideoProcessor
-      const result = await this.processor.processVideo(videoJob);
+      // 📊 Progress callback setup (similar to JobProcessor)
+      let lastPingTime = 0;
+      let lastPingProgress = 0;
+      const PING_INTERVAL_MS = 10000; // 10 seconds
+      const PING_PROGRESS_THRESHOLD = 5; // Only ping if progress changed by 5%+
+
+      const progressCallback = (progress: any) => {
+        // Always update local queue and dashboard
+        this.jobQueue.updateProgress(job.id, progress.percent);
+        
+        if (this.dashboard) {
+          this.dashboard.updateJobProgress(job.id, progress);
+        }
+
+        // Send progress ping if webhook_url exists
+        if (request.webhook_url) {
+          const now = Date.now();
+          const timeSinceLastPing = now - lastPingTime;
+          const progressDelta = Math.abs(progress.percent - lastPingProgress);
+
+          // Send ping if: 10s elapsed OR progress jumped by 5%+
+          if (timeSinceLastPing >= PING_INTERVAL_MS || progressDelta >= PING_PROGRESS_THRESHOLD) {
+            lastPingTime = now;
+            lastPingProgress = progress.percent;
+
+            // Fire-and-forget ping (no await)
+            import('./WebhookService.js').then(({ WebhookService }) => {
+              const webhookService = new WebhookService();
+              webhookService.sendProgressPing(
+                request.webhook_url,
+                request.owner,
+                request.permlink,
+                progress.percent,
+                progress.profile, // Use encoding profile as stage
+                request.api_key
+              ).catch(err => {
+                // Already logged in sendProgressPing, just prevent unhandled rejection
+              });
+            });
+          }
+        }
+      };
+
+      // Process video using existing VideoProcessor WITH progress callback
+      const result = await this.processor.processVideo(videoJob, progressCallback);
       
       const processingTimeSeconds = (Date.now() - startTime) / 1000;
       
@@ -883,6 +926,7 @@ export class ThreeSpeakEncoder {
             permlink: request.permlink,
             input_cid: request.input_cid,
             status: 'complete',
+            progress: 100, // ✅ Explicit completion progress
             manifest_cid: manifestCid,
             video_url: `ipfs://${manifestCid}/manifest.m3u8`,
             job_id: job.id,
