@@ -72,6 +72,19 @@ if errorlevel 1 (
     echo ✅ IPFS found
 )
 
+REM Check for aria2 (optional but recommended for fast downloads)
+where aria2c >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ⚡ OPTIONAL: aria2 not found - downloads will use single-stream fallback
+    echo    For faster downloads on high-latency connections, install aria2:
+    echo    https://github.com/aria2/aria2/releases/latest
+    echo    Then add aria2c.exe to your PATH and re-run if desired.
+    echo.
+) else (
+    echo ✅ aria2 detected - parallel downloads enabled
+)
+
 REM Choose encoder mode
 echo.
 echo 🎯 Choose your encoder mode:

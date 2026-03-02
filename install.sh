@@ -74,7 +74,7 @@ install_deps() {
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
         fi
         echo "📦 Installing dependencies with brew..."
-        brew install node ffmpeg git
+        brew install node ffmpeg git aria2
     fi
 }
 

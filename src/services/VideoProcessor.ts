@@ -994,12 +994,12 @@ export class VideoProcessor {
     const gatewayUrl = `${gateway}/ipfs/${ipfsHash}`;
 
     try {
-      return await this.downloadWithAria2c(gatewayUrl, outputPath);
+      return await this.downloadWithAria2c(gatewayUrl, outputPath, 90);
     } catch (err: any) {
       if (err.code === 'ENOENT' || String(err).includes('aria2c')) {
-        console.warn(`[Gateway] aria2c not available → falling back to single-stream (original method)`);
+        logger.warn(`[Gateway] aria2c not available → falling back to single-stream (original method)`);
       } else {
-        console.warn(`[Gateway] aria2c failed, falling back to single-stream: ${err.message}`);
+        logger.warn(`[Gateway] aria2c failed, falling back to single-stream: ${err.message}`);
       }
       return this.downloadWithAxiosGateway(gatewayUrl, outputPath, gateway);
     }
@@ -1059,12 +1059,12 @@ export class VideoProcessor {
    */
   private async downloadFromHTTP(uri: string, outputPath: string): Promise<void> {
     try {
-      return await this.downloadWithAria2c(uri, outputPath);
+      return await this.downloadWithAria2c(uri, outputPath, 120);
     } catch (err: any) {
       if (err.code === 'ENOENT' || String(err).includes('aria2c')) {
-        console.warn(`[HTTP] aria2c not available → falling back to single-stream (original method)`);
+        logger.warn(`[HTTP] aria2c not available → falling back to single-stream (original method)`);
       } else {
-        console.warn(`[HTTP] aria2c failed, falling back to single-stream: ${err.message}`);
+        logger.warn(`[HTTP] aria2c failed, falling back to single-stream: ${err.message}`);
       }
       return this.downloadWithAxiosSingle(uri, outputPath);
     }
@@ -1074,17 +1074,15 @@ export class VideoProcessor {
    * aria2c version – super fast on 300 ms+ latency
    * ──────────────────────────────────────────────────────────────
    */
-  private async downloadWithAria2c(uri: string, outputPath: string): Promise<void> {
+  private async downloadWithAria2c(uri: string, outputPath: string, timeoutSeconds: number = 120): Promise<void> {
     const { spawn } = await import('child_process');
     const path = await import('path');
+    const readline = await import('readline');
 
     const dir = path.dirname(outputPath);
     const filename = path.basename(outputPath);
 
-    // Tuned for high-latency (300 ms) connections
-    // You can increase to 16-20 if your server allows it
-    // TLDR - either add auto-detection of connections or add an argument to .env
-    const connections = 12;
+    const connections = this.config.encoder?.aria2_connections ?? 12;
 
     const args = [
       uri,
@@ -1098,29 +1096,39 @@ export class VideoProcessor {
       '--allow-overwrite=true',
       '--continue=true',                      // resume support
       '--user-agent=3SpeakEncoder/1.0',
-      '--quiet=false',                        // shows beautiful real-time progress
-      '--summary-interval=3'                  // progress update every 3 s
+      `--timeout=${timeoutSeconds}`,          // inactivity timeout — matches axios timeouts
+      '--connect-timeout=30',                 // max time to establish connection
+      '--quiet=true',                         // suppress raw carriage-return progress bar
+      '--summary-interval=3'                  // progress update every 3 s (clean newline-terminated)
     ];
 
-    console.log(`[aria2c] Starting parallel download (${connections} connections): ${uri}`);
+    logger.info(`[aria2c] Starting parallel download (${connections} connections): ${uri}`);
 
     return new Promise((resolve, reject) => {
       const proc = spawn('aria2c', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-      // Forward aria2c's nice progress bar / stats to console
-      proc.stdout.on('data', (data: Buffer) => process.stdout.write(data));
-      proc.stderr.on('data', (data: Buffer) => process.stderr.write(data));
+      // Node.js kill-timer safety net (30s grace beyond aria2c's own timeout)
+      const killTimer = setTimeout(() => {
+        proc.kill('SIGTERM');
+        reject(new Error(`aria2c timed out after ${timeoutSeconds + 30}s`));
+      }, (timeoutSeconds + 30) * 1000);
+
+      // Route output through logger (line-buffered, no raw carriage-return noise)
+      const rl = readline.createInterface({ input: proc.stdout });
+      rl.on('line', (line: string) => { if (line.trim()) logger.info(`[aria2c] ${line}`); });
+      proc.stderr.on('data', (d: Buffer) => { const t = d.toString().trim(); if (t) logger.warn(`[aria2c] ${t}`); });
 
       proc.on('close', (code) => {
+        clearTimeout(killTimer);
         if (code === 0) {
-          console.log(`✅ aria2c download complete → ${outputPath}`);
+          logger.info(`[aria2c] Download complete → ${outputPath}`);
           resolve();
         } else {
           reject(new Error(`aria2c exited with code ${code}`));
         }
       });
 
-      proc.on('error', reject);
+      proc.on('error', (err) => { clearTimeout(killTimer); reject(err); });
     });
   }
 
